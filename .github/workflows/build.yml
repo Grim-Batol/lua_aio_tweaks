@@ -1,0 +1,95 @@
+name: Build Lua archive
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Compile MoonScript and package Lua
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Lua 5.1
+        uses: leafo/gh-actions-lua@v13
+        with:
+          luaVersion: "5.1.5"
+
+      - name: Set up LuaRocks
+        uses: leafo/gh-actions-luarocks@v6
+
+      - name: Install MoonScript
+        run: luarocks install moonscript 0.8.0-1
+
+      - name: Compile and archive scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          sources=( ./*.moon )
+          if (( ${#sources[@]} == 0 )); then
+            echo "No MoonScript files found in the repository root."
+            exit 1
+          fi
+
+          rm -rf .build release
+          mkdir -p .build/lua release
+
+          for source in "${sources[@]}"; do
+            moonc -t .build/lua "$source"
+          done
+
+          lua_files=( .build/lua/*.lua )
+          if (( ${#lua_files[@]} != ${#sources[@]} )); then
+            echo "The compiler did not produce one Lua file for every MoonScript file."
+            exit 1
+          fi
+
+          luac -p "${lua_files[@]}"
+
+          archive_label="${GITHUB_REF_NAME//\//-}"
+          if [[ "$GITHUB_REF_TYPE" != "tag" ]]; then
+            archive_label="${GITHUB_SHA:0:7}"
+          fi
+
+          archive="release/lua_aio_tweaks-${archive_label}.zip"
+          zip -j "$archive" "${lua_files[@]}"
+          echo "Created $archive"
+
+      - name: Upload compiled archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: lua-aio-tweaks-archive
+          path: release/*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish tagged release
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download compiled archive
+        uses: actions/download-artifact@v4
+        with:
+          name: lua-aio-tweaks-archive
+          path: release
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: release/*.zip
+          generate_release_notes: true
